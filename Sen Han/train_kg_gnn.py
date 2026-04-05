@@ -320,7 +320,6 @@ def apply_st_penalty(sim_matrix, q_names, g_names, dist_matrix, cam2idx, fps=25.
     """
     max_speed=40.0 m/s about 144 km/h
     """
-    # 1. 拨乱反正：直接从图片名的第三部分提取 Frame ID，转化为绝对秒数！
     q_times = np.array([int(name.split('_')[2]) for name in q_names]) / fps
     g_times = np.array([int(name.split('_')[2]) for name in g_names]) / fps
     
@@ -330,10 +329,8 @@ def apply_st_penalty(sim_matrix, q_names, g_names, dist_matrix, cam2idx, fps=25.
     q_idx = np.array([cam2idx.get(c, -1) for c in q_cams])
     g_idx = np.array([cam2idx.get(c, -1) for c in g_cams])
     
-    # 2. 计算真实时间差
     time_diff_sec = np.abs(q_times[:, None] - g_times[None, :]) 
     
-    # 获取空间距离
     safe_q = np.maximum(q_idx, 0)
     safe_g = np.maximum(g_idx, 0)
     distances = dist_matrix[safe_q[:, None], safe_g[None, :]]
