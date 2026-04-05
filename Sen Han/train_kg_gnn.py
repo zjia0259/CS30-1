@@ -288,7 +288,6 @@ class TripletLoss(nn.Module):
         return self.ranking_loss(dist_an, dist_ap, torch.ones_like(dist_an))
 
 def evaluate_reid_with_matrix(sim_matrix, q_vids, q_cams, g_vids, g_cams):
-    """直接接收矩阵进行评测，为了后续的时空惩罚铺路"""
     q_vids, q_cams, g_vids, g_cams = map(np.array, (q_vids, q_cams, g_vids, g_cams))
     num_q = sim_matrix.shape[0]
     indices = np.argsort(sim_matrix, axis=1)[:, ::-1]
@@ -316,10 +315,10 @@ def evaluate_reid_with_matrix(sim_matrix, q_vids, q_cams, g_vids, g_cams):
     mAP = np.mean(all_ap) if all_ap else 0.0
     CMC = np.mean(np.asarray(all_cmc).astype(np.float32), axis=0) if all_cmc else np.zeros(100)
     return mAP, CMC
-# 🚨 终极核武器：基于帧率的弹性时空约束
+
 def apply_st_penalty(sim_matrix, q_names, g_names, dist_matrix, cam2idx, fps=25.0, max_speed=20.0):
     """
-    max_speed=40.0 m/s 相当于 144 km/h，由于摄像头可能有同步误差，给一个宽容的极限速度
+    max_speed=40.0 m/s about 144 km/h
     """
     # 1. 拨乱反正：直接从图片名的第三部分提取 Frame ID，转化为绝对秒数！
     q_times = np.array([int(name.split('_')[2]) for name in q_names]) / fps
