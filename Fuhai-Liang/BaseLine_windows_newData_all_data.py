@@ -17,7 +17,7 @@ from torchvision import models, transforms
 from torchvision.models import ResNet50_Weights
 
 # ==========================================
-# [NEW] 固定所有随机种子，保证实验绝对可复现
+# [NEW] Fix all random seeds for absolute reproducibility
 # ==========================================
 def set_seed(seed=42):
     random.seed(seed)
@@ -27,12 +27,16 @@ def set_seed(seed=42):
     torch.cuda.manual_seed_all(seed)
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
-    print(f"=> 已固定全局随机种子 Seed: {seed}")
+    print(f"=> Global random seed fixed at: {seed}")
 
 # ==========================================
-# 1. 数据解析工具 (兼容 GBK/GB2312)
+# 1. Data Parsing Tools (GBK/GB2312 Compatible)
 # ==========================================
 def parse_xml_compat(xml_path):
+    """
+    Parses XML files while handling GBK/GB2312 encoding issues.
+    Replaces encoding declarations to UTF-8 to ensure successful parsing.
+    """
     with open(xml_path, 'r', encoding='gbk', errors='ignore') as f:
         xml_content = f.read()
     xml_content = xml_content.replace('encoding="gb2312"', 'encoding="utf-8"')
@@ -41,6 +45,7 @@ def parse_xml_compat(xml_path):
     return root.find('Items').findall('Item')
 
 def get_train_data(train_xml):
+    """Parses training XML and maps vehicleIDs to continuous indices (0 to N-1)."""
     items = parse_xml_compat(train_xml)
     train_data, id_map = [], {}
     current_idx = 0
@@ -53,6 +58,10 @@ def get_train_data(train_xml):
     return train_data, len(id_map)
 
 def get_test_eval_data(test_xml, eval_k_queries='all', seed=42):
+    """
+    Prepares validation query and gallery lists from the test XML.
+    Used for monitoring model performance during the training phase.
+    """
     items = parse_xml_compat(test_xml)
     id_dict = defaultdict(list)
     for item in items:
@@ -61,8 +70,8 @@ def get_test_eval_data(test_xml, eval_k_queries='all', seed=42):
             'cam_id': item.get('cameraID')
         })
         
-    unique_vids = sorted(list(id_dict.keys())) # 排序保证一致性
-    random.seed(seed) # 保证每次抽样相同
+    unique_vids = sorted(list(id_dict.keys())) # Sort to maintain consistency
+    random.seed(seed) # Ensure identical sampling across runs
     
     if eval_k_queries == 'all':
         selected_vids = set(unique_vids)
@@ -85,7 +94,7 @@ def get_test_eval_data(test_xml, eval_k_queries='all', seed=42):
                 
     return test_q_list, test_g_list
 
-# ===== [改动 1] 新增：解析 Test 元数据 (同时返回 vid 和 cam 字典) =====
+# ===== [Mod 1] NEW: Parse Test Metadata (Returns vid and cam mapping dictionaries) =====
 def get_test_meta_map(test_xml):
     items = parse_xml_compat(test_xml)
     vid_map, cam_map = {}, {}
@@ -95,11 +104,11 @@ def get_test_meta_map(test_xml):
         cam_map[img_name] = item.get('cameraID')
     return vid_map, cam_map
 
-# ===== [改动 2] 新增：从 Query 文件名提取 vehicleID 和 cameraID =====
+# ===== [Mod 2] NEW: Extract vehicleID and cameraID from Query filename =====
 def parse_query_meta(name):
     """
-    解析 query 图片名，例如 0002_c002_00030600_0.jpg
-    返回 (vehicleID, cameraID)
+    Parses query image names, e.g., 0002_c002_00030600_0.jpg
+    Returns (vehicleID, cameraID)
     """
     parts = name.split('_')
     if len(parts) >= 2:
@@ -111,7 +120,7 @@ def read_txt_lines(txt_path):
         return [line.strip() for line in f.readlines() if line.strip()]
 
 # ==========================================
-# 2. Dataset 定义
+# 2. Dataset Definition
 # ==========================================
 class ReIDDataset(Dataset):
     def __init__(self, img_dir, data_list, transform=None):
@@ -130,14 +139,16 @@ class ReIDDataset(Dataset):
         return img, label_or_vid, cam_id, img_name
 
 # ==========================================
-# 3. ResNet50 Baseline 模型
+# 3. ResNet50 Baseline Model
 # ==========================================
 class ResNet50ReID(nn.Module):
     def __init__(self, num_classes):
         super(ResNet50ReID, self).__init__()
         resnet = models.resnet50(weights=ResNet50_Weights.DEFAULT)
+        # Remove the last two layers (AvgPool and FC) to get a feature extractor
         self.backbone = nn.Sequential(*list(resnet.children())[:-2])
         self.gap = nn.AdaptiveAvgPool2d(1)
+        # BNNeck architecture for ReID: significantly improves performance
         self.bottleneck = nn.BatchNorm1d(2048)
         self.bottleneck.bias.requires_grad_(False)
         self.classifier = nn.Linear(2048, num_classes, bias=False)
@@ -146,19 +157,21 @@ class ResNet50ReID(nn.Module):
         features = self.backbone(x)
         features = self.gap(features).view(features.size(0), -1)
         feat_bn = self.bottleneck(features)
+        # Return both logits (for CrossEntropy) and features (for Triplet/Metric Learning) during training
         return (self.classifier(feat_bn), features) if self.training else feat_bn
 
 # ==========================================
-# 4. 特征提取与标准 ReID 评测
+# 4. Feature Extraction & Standard ReID Evaluation
 # ==========================================
 def extract_features(model, dataloader, device):
     from tqdm import tqdm
     model.eval()
     feats_list, vids_list, cams_list, names_list = [], [], [], []
     with torch.no_grad():
-        for imgs, vids, cams, names in tqdm(dataloader, desc="提取特征", leave=False):
+        for imgs, vids, cams, names in tqdm(dataloader, desc="Extracting Features", leave=False):
             imgs = imgs.to(device)
             feats = model(imgs)
+            # L2 Normalization is crucial for cosine similarity-based retrieval
             feats = F.normalize(feats, p=2, dim=1)
             feats_list.append(feats.cpu())
             vids_list.extend(vids)
@@ -167,6 +180,7 @@ def extract_features(model, dataloader, device):
     return torch.cat(feats_list, dim=0), vids_list, cams_list, names_list
 
 def evaluate_reid(q_feats, q_vids, q_cams, g_feats, g_vids, g_cams):
+    """Calculates Mean Average Precision (mAP) and CMC curve (Rank-N)."""
     sim_matrix = torch.mm(q_feats, g_feats.t()).numpy()
     q_vids, q_cams = np.array(q_vids), np.array(q_cams)
     g_vids, g_cams = np.array(g_vids), np.array(g_cams)
@@ -178,7 +192,7 @@ def evaluate_reid(q_feats, q_vids, q_cams, g_feats, g_vids, g_cams):
     for q_idx in range(num_q):
         q_vid, q_cam = q_vids[q_idx], q_cams[q_idx]
         order = indices[q_idx]
-        # 标准 ReID 过滤：同 ID 且 同摄像头 视为 junk，不计入评测
+        # Standard ReID filtering: samples with same ID and same Camera are treated as junk
         remove = (g_vids[order] == q_vid) & (g_cams[order] == q_cam)
         keep = np.invert(remove)
         raw_match = matches[q_idx][keep]
@@ -200,11 +214,11 @@ def evaluate_reid(q_feats, q_vids, q_cams, g_feats, g_vids, g_cams):
     return mAP, CMC
 
 # ==========================================
-# 5. 主流程
+# 5. Main Process
 # ==========================================
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--root', type=str, required=True, help="数据集根目录")
+    parser.add_argument('--root', type=str, required=True, help="Root directory of dataset")
     parser.add_argument('--epochs', type=int, default=10) 
     parser.add_argument('--batch_size', type=int, default=128)
     parser.add_argument('--eval_k_queries', type=str, default='all')
@@ -219,7 +233,7 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"=> Using device: {device}")
 
-    # 路径配置
+    # Path configurations
     train_dir = os.path.join(args.root, 'image_train')
     test_dir = os.path.join(args.root, 'image_test')
     query_dir = os.path.join(args.root, 'image_query')
@@ -228,23 +242,23 @@ def main():
     query_txt = os.path.join(args.root, 'name_query.txt')
     test_txt = os.path.join(args.root, 'name_test.txt')
 
-    print("\n=> 正在解析数据字典...")
+    print("\n=> Parsing data dictionaries...")
     train_list, num_classes = get_train_data(train_xml)
     test_eval_q, test_eval_g = get_test_eval_data(test_xml, args.eval_k_queries, args.seed)
     
     query_names = read_txt_lines(query_txt)
     test_names = read_txt_lines(test_txt)
     
-    # ===== [改动 3] 应用解析函数构建包含真实 GT 的 List =====
+    # ===== [Mod 3] Apply parsing functions to build lists with ground truth labels =====
     test_img_to_vid, test_img_to_cam = get_test_meta_map(test_xml)
-    # 对于 query，使用 parse_query_meta 解析真实 vid 和 cam
+    # For query: use parse_query_meta to extract real vid and cam from filenames
     real_q_list = [(name, parse_query_meta(name)[0], parse_query_meta(name)[1]) for name in query_names] 
-    # 对于 gallery，从 test_xml 映射真实 vid 和 cam
+    # For gallery: map real vid and cam from the test_xml
     real_test_list = [(name, test_img_to_vid.get(name, "-1"), test_img_to_cam.get(name, "-1")) for name in test_names]
 
-    print(f"   [Train] 样本数: {len(train_list)} (ID数: {num_classes})")
-    print(f"   [Test Eval] Query数: {len(test_eval_q)}, Gallery数: {len(test_eval_g)}")
-    print(f"   [Real Query] 全量真实查询数: {len(real_q_list)}\n")
+    print(f"   [Train] Sample count: {len(train_list)} (ID count: {num_classes})")
+    print(f"   [Test Eval] Query count: {len(test_eval_q)}, Gallery count: {len(test_eval_g)}")
+    print(f"   [Real Query] Full Ground Truth query count: {len(real_q_list)}\n")
 
     transform_train = transforms.Compose([
         transforms.Resize((256, 256)),
@@ -271,7 +285,7 @@ def main():
     best_epoch = -1
 
     # ==========================================
-    # 训练循环
+    # Training Loop
     # ==========================================
     from tqdm import tqdm
     for epoch in range(args.epochs):
@@ -293,13 +307,13 @@ def main():
             running_loss += loss.item()
             pbar.set_postfix({'loss': f"{loss.item():.4f}"})
 
-        # --- 每个 Epoch 结束后在 Test 集合上计算 mAP 和 CMC ---
-        print(f"\n=> Epoch {epoch+1} 结束，正在进行 Test 评测...")
+        # --- Evaluate mAP and CMC on Test set after each Epoch ---
+        print(f"\n=> Epoch {epoch+1} finished, starting Test evaluation...")
         q_feats, q_vids, q_cams, _ = extract_features(model, val_q_loader, device)
         g_feats, g_vids, g_cams, _ = extract_features(model, val_g_loader, device)
         mAP, CMC = evaluate_reid(q_feats, q_vids, q_cams, g_feats, g_vids, g_cams)
         
-        print(f"   [Epoch {epoch+1} 指标] mAP: {mAP:.4f} | Rank-1: {CMC[0]:.4f} | Rank-5: {CMC[4]:.4f} | Rank-10: {CMC[9]:.4f}")
+        print(f"   [Epoch {epoch+1} Metrics] mAP: {mAP:.4f} | Rank-1: {CMC[0]:.4f} | Rank-5: {CMC[4]:.4f} | Rank-10: {CMC[9]:.4f}")
 
         if mAP > best_mAP:
             best_mAP = mAP
@@ -311,30 +325,30 @@ def main():
                 'best_mAP': best_mAP
             }
             torch.save(state, best_ckpt_path)
-            print(f"   [✔] 发现新最佳 mAP ({best_mAP:.4f})，已保存到 {best_ckpt_path}\n")
+            print(f"   [✔] New best mAP found ({best_mAP:.4f}), saved to {best_ckpt_path}\n")
         else:
-            print(f"   [ ] 未超过历史最佳 mAP ({best_mAP:.4f} at Epoch {best_epoch})\n")
+            print(f"   [ ] No improvement over best mAP ({best_mAP:.4f} at Epoch {best_epoch})\n")
 
     # ==========================================
-    # 最终检索预测与导出 Excel
+    # Final Retrieval Prediction & Excel Export
     # ==========================================
     print("=" * 60)
-    print(f"=> 训练全部结束！best epoch = {best_epoch}, best mAP = {best_mAP:.4f}")
+    print(f"=> Training complete! best epoch = {best_epoch}, best mAP = {best_mAP:.4f}")
     
-    print(f"=> 正在加载最佳权重 {best_ckpt_path} ...")
+    print(f"=> Loading best weights from {best_ckpt_path} ...")
     checkpoint = torch.load(best_ckpt_path, map_location=device, weights_only=False)
     model.load_state_dict(checkpoint['state_dict'])
-    print("=> 已成功加载 best_baseline.pth。准备生成真实 Query 的 Excel 和最终指标...")
+    print("=> best_baseline.pth loaded. Preparing Excel and final metrics for real Query...")
     print("=" * 60)
 
     real_q_loader = DataLoader(ReIDDataset(query_dir, real_q_list, transform_test), batch_size=args.batch_size, shuffle=False, num_workers=4, pin_memory=True)
     real_g_loader = DataLoader(ReIDDataset(test_dir, real_test_list, transform_test), batch_size=args.batch_size, shuffle=False, num_workers=4, pin_memory=True)
 
-    # 提取特征 (因为 real_q_list 已经包含了真实的 vid 和 cam，提取出来的直接就能用)
+    # Extract features
     rq_feats, rq_vids, rq_cams, rq_names = extract_features(model, real_q_loader, device)
     rg_feats, rg_vids, rg_cams, rg_names = extract_features(model, real_g_loader, device)
 
-    print("\n=> 计算相似度并生成 Excel ...")
+    print("\n=> Calculating similarity and generating Excel report...")
     sim_matrix_final = torch.mm(rq_feats, rg_feats.t())
     top5_indices = torch.topk(sim_matrix_final, k=5, dim=1, largest=True)[1]
 
@@ -352,17 +366,16 @@ def main():
     df = pd.DataFrame(results)
     output_excel = "query_top5_predictions.xlsx"
     df.to_excel(output_excel, index=False)
-    print(f"=> [成功] Excel 预测结果已保存至：{output_excel}")
+    print(f"=> [Success] Excel prediction results saved to: {output_excel}")
 
-    # ===== [改动 4] 新增：对全量真实 Query 进行标准 mAP/CMC 评测 =====
+    # ===== [Mod 4] NEW: Standard mAP/CMC evaluation on all full real queries =====
     print("\n=> ==========================================================")
-    print(f"=> [最终评测] 开始对全量真实 Query ({len(rq_names)}) vs Test ({len(rg_names)}) 计算指标")
-    print("=> 评测标准：基于 vehicleID 匹配 + cameraID 过滤 (同 camera 视为 junk 不计分)")
+    print(f"=> [Final Evaluation] Starting metrics calculation for {len(rq_names)} Query vs {len(rg_names)} Test samples")
+    print("=> Standards: Matching based on vehicleID + cameraID filtering (same camera = junk)")
     
-    # 完美复用我们现成的 evaluate_reid 函数
     mAP_final, CMC_final = evaluate_reid(rq_feats, rq_vids, rq_cams, rg_feats, rg_vids, rg_cams)
     
-    print(f"   [Real Query 最终指标] mAP: {mAP_final:.4f} | Rank-1: {CMC_final[0]:.4f} | Rank-5: {CMC_final[4]:.4f} | Rank-10: {CMC_final[9]:.4f}")
+    print(f"   [Real Query Final Metrics] mAP: {mAP_final:.4f} | Rank-1: {CMC_final[0]:.4f} | Rank-5: {CMC_final[4]:.4f} | Rank-10: {CMC_final[9]:.4f}")
     print("=> ==========================================================\n")
 
 if __name__ == '__main__':
