@@ -1,4 +1,4 @@
-# 文件名: train_resnet_ibn.py
+# File Name: train_resnet_ibn.py
 import os
 import random
 import argparse
@@ -16,20 +16,20 @@ from torch.amp import autocast, GradScaler
 from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms
 
-import timm # 引入强大的图像模型库，用于加载 IBN
+import timm # Powerful image model library for loading IBN variants
 
 # ==========================================
-# 1. 硬件环境检测与随机种子设定
+# 1. Hardware Detection & Random Seed Setup
 # ==========================================
 def check_device():
     print("\n" + "=" * 60)
-    print("=> 🖥️ 硬件环境检测报告:")
+    print("=>  Hardware Environment Detection Report:")
     if torch.cuda.is_available():
         device = torch.device("cuda")
-        print(f"   [✔] 成功检测到 GPU 加速环境！({torch.cuda.get_device_name(0)})")
+        print(f"   [✔] GPU acceleration detected! ({torch.cuda.get_device_name(0)})")
     else:
         device = torch.device("cpu")
-        print(f"   [!] 警告: 未检测到 GPU，当前正在使用纯 CPU 运行！")
+        print(f"   [!] Warning: GPU not detected, running on CPU mode!")
     print("=" * 60 + "\n")
     return device
 
@@ -40,12 +40,16 @@ def set_seed(seed=42):
     torch.cuda.manual_seed_all(seed)
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
-    print(f"=> 已固定全局随机种子 Seed: {seed}")
+    print(f"=> Global random seed fixed at: {seed}")
 
 # ==========================================
-# 2. 数据解析工具 (专门针对真实 Query 和 Test)
+# 2. Data Parsing Tools (For Real Query and Test)
 # ==========================================
 def parse_xml_compat(xml_path):
+    """
+    Compatible XML parser to handle GBK encoding issues.
+    Replaces GB2312 declarations with UTF-8 to ensure successful parsing.
+    """
     with open(xml_path, 'r', encoding='gbk', errors='ignore') as f:
         xml_content = f.read()
     xml_content = xml_content.replace('encoding="gb2312"', 'encoding="utf-8"').replace('encoding="GB2312"', 'encoding="utf-8"')
@@ -63,9 +67,9 @@ def get_train_data(train_xml):
         train_data.append((item.get('imageName'), id_map[vid], item.get('cameraID')))
     return train_data, len(id_map)
 
-# --- 新增/恢复：真实评测需要的解析函数 ---
+# --- Added/Restored: Parsing functions required for real evaluation ---
 def get_test_meta_map(test_xml):
-    """解析 test_label.xml，建立图片名到 真实ID 和 摄像头ID 的映射字典"""
+    """Parses test_label.xml to create mapping of imageName to realID and cameraID"""
     items = parse_xml_compat(test_xml)
     vid_map, cam_map = {}, {}
     for item in items:
@@ -75,7 +79,7 @@ def get_test_meta_map(test_xml):
     return vid_map, cam_map
 
 def parse_query_meta(name):
-    """解析 query 图片名提取真实信息，例如 0002_c002_00030600_0.jpg -> (0002, c002)"""
+    """Extracts ground truth from query filenames, e.g., 0002_c002_00030600_0.jpg -> (0002, c002)"""
     parts = name.split('_')
     if len(parts) >= 2:
         return parts[0], parts[1]
@@ -86,7 +90,7 @@ def read_txt_lines(txt_path):
         return [line.strip() for line in f.readlines() if line.strip()]
 
 # ==========================================
-# 3. Dataset 定义
+# 3. Dataset Definition
 # ==========================================
 class ReIDDataset(Dataset):
     def __init__(self, img_dir, data_list, transform=None):
@@ -104,12 +108,12 @@ class ReIDDataset(Dataset):
         return img, label_or_vid, cam_id, img_name
 
 # ==========================================
-# 为三元损失设计的 PK 采样器
+# PK Sampler designed for Triplet Loss
 # ==========================================
 class RandomIdentitySampler(torch.utils.data.sampler.Sampler):
     """
-    专门为 ReID 设计的 PK 采样器
-    保证每个 Batch 内包含 P 个 ID，每个 ID 包含 K 张图片
+    Random Identity Sampler for ReID.
+    Ensures each batch contains P identities, each with K images.
     """
     def __init__(self, data_list, batch_size, num_instances=4):
         self.data_list = data_list
@@ -118,14 +122,14 @@ class RandomIdentitySampler(torch.utils.data.sampler.Sampler):
         self.num_pids_per_batch = self.batch_size // self.num_instances
         self.index_dic = defaultdict(list)
         
-        # 解析传入的 train_list (图片名, 车辆ID, 摄像头ID)
+        # Parse train_list (imageName, vehicleID, cameraID)
         for index, item in enumerate(self.data_list):
-            pid = item[1]  # 车辆 ID
+            pid = item[1]  # Vehicle ID
             self.index_dic[pid].append(index)
             
         self.pids = list(self.index_dic.keys())
         
-        # 估算一个 epoch 的总长度
+        # Estimate total epoch length
         self.length = 0
         for pid in self.pids:
             idxs = self.index_dic[pid]
@@ -138,7 +142,7 @@ class RandomIdentitySampler(torch.utils.data.sampler.Sampler):
         batch_idxs_dict = defaultdict(list)
         for pid in self.pids:
             idxs = copy.deepcopy(self.index_dic[pid])
-            # 如果某个 ID 的总图片不够 K 张，就随机重采样补齐，保证能凑够一对
+            # If an ID has fewer than K images, resample to fill the gap
             if len(idxs) < self.num_instances:
                 idxs = np.random.choice(idxs, size=self.num_instances, replace=True).tolist()
             random.shuffle(idxs)
@@ -155,21 +159,21 @@ class RandomIdentitySampler(torch.utils.data.sampler.Sampler):
                 final_idxs.extend(batch_idxs)
                 if len(batch_idxs_dict[pid]) < self.num_instances:
                     avai_pids.remove(pid)
-                    
+                        
         return iter(final_idxs)
 
     def __len__(self):
         return self.length
 
 # ==========================================
-# 三元损失的定义
+# Triplet Loss Definition
 # ==========================================
 # ==========================================
-# 三元损失的定义 (终极稳定版)
+# Triplet Loss Definition (Stable Version)
 # ==========================================
 class TripletLoss(nn.Module):
     """
-    带有在线难例挖掘 (Online Hard Example Mining) 的三元组损失函数
+    Triplet Loss with Online Hard Example Mining (OHEM)
     """
     def __init__(self, margin=0.3):
         super(TripletLoss, self).__init__()
@@ -178,48 +182,49 @@ class TripletLoss(nn.Module):
 
     def forward(self, inputs, targets):
         """
-        inputs: 骨干网络输出的特征 (Batch_Size, Feature_Dim)
-        targets: 真实的身份标签 (Batch_Size)
+        inputs: Features from backbone (Batch_Size, Feature_Dim)
+        targets: Identity labels (Batch_Size)
         """
-        # 必须转为 FP32，防止混合精度下的溢出
+        # Convert to FP32 to prevent overflow in Mixed Precision training
         inputs = inputs.float()
         n = inputs.size(0)
         
-        # 🚨 核心修复点：放弃手写公式，使用 PyTorch 官方高度优化的 cdist 算欧氏距离
-        # 自带梯度保护，彻底杜绝 NaN 导致模型卡死的问题！
+        # Core Fix: Use PyTorch optimized cdist for Euclidean distance.
+        # Built-in gradient protection avoids NaN issues that lead to model crashes.
         dist = torch.cdist(inputs, inputs, p=2.0)
 
-        # 生成 Mask 区分正样本(同ID)和负样本(不同ID)
+        # Generate mask to distinguish positive (same ID) and negative (different ID) samples
         mask = targets.expand(n, n).eq(targets.expand(n, n).t())
         dist_ap, dist_an = [], []
 
-        # 难例挖掘：寻找每个 Anchor 的最难正样本和最难负样本
+        # Hard Mining: Find hardest positive and hardest negative for each anchor
         for i in range(n):
-            # Hardest Positive (距离最远的同类)
+            # Hardest Positive (furthest distance within same class)
             dist_ap.append(dist[i][mask[i]].max().unsqueeze(0))  
-            # Hardest Negative (距离最近的异类)
+            # Hardest Negative (closest distance across different classes)
             dist_an.append(dist[i][mask[i] == 0].min().unsqueeze(0)) 
 
         dist_ap = torch.cat(dist_ap)
         dist_an = torch.cat(dist_an)
 
-        # 计算 Margin Ranking Loss
+        # Calculate Margin Ranking Loss
         y = torch.ones_like(dist_an)
         loss = self.ranking_loss(dist_an, dist_ap, y)
         return loss
+
 # ==========================================
-# 4. 核心网络：真正的 ResNet50-IBN-a
+# 4. Core Network: ResNet50-IBN-a
 # ==========================================
 class ResNet50IBN_ReID(nn.Module):
     def __init__(self, num_classes):
         super(ResNet50IBN_ReID, self).__init__()
         
-        # 1. 改为通过 torch.hub 加载官方的 IBN-a 预训练模型
-        print("=> 正在通过 torch.hub 加载官方 resnet50_ibn_a ...")
-        # 首次运行会自动从 GitHub 下载权重到本地缓存
+        # 1. Loading official IBN-a pretrained model via torch.hub
+        print("=> Loading official resnet50_ibn_a via torch.hub ...")
+        # Weights automatically download from GitHub to local cache on first run
         backbone = torch.hub.load('XingangPan/IBN-Net', 'resnet50_ibn_a', pretrained=True)
         
-        # 2. 逐层提取 backbone (舍弃掉原本用于 ImageNet 的 avgpool 和 fc)
+        # 2. Extract backbone layers (discarding ImageNet-specific avgpool and fc)
         self.conv1 = backbone.conv1
         self.bn1 = backbone.bn1
         self.relu = backbone.relu
@@ -229,23 +234,24 @@ class ResNet50IBN_ReID(nn.Module):
         self.layer3 = backbone.layer3
         self.layer4 = backbone.layer4
         
-        # 3. 核心魔改：将最后一次下采样的 stride 改为 1 (生成 16x16 而非 8x8 的高分辨率特征图)
+        # 3. Core modification: Change stride of the last downsampling block to 1 
+        # (Generates 16x16 high-resolution feature maps instead of 8x8)
         self.layer4[0].conv2.stride = (1, 1)
         self.layer4[0].downsample[0].stride = (1, 1)
         
-        # 4. ReID 自定义分类器与 BNNeck
+        # 4. Custom ReID Classifier and BNNeck
         self.gap = nn.AdaptiveAvgPool2d(1)
         self.bottleneck = nn.BatchNorm1d(2048)
         self.bottleneck.bias.requires_grad_(False)
         self.classifier = nn.Linear(2048, num_classes, bias=False)
 
-        # 👇 在 __init__ 的最后加上这三行权重初始化代码
+        # Initializing weights for the BNNeck and Classifier
         nn.init.constant_(self.bottleneck.weight, 1.0)
         nn.init.constant_(self.bottleneck.bias, 0.0)
         nn.init.normal_(self.classifier.weight, std=0.001)
 
     def forward(self, x):
-        # 手动通过骨干网络的前向传播
+        # Manual forward pass through backbone
         x = self.conv1(x)
         x = self.bn1(x)
         x = self.relu(x)
@@ -255,17 +261,17 @@ class ResNet50IBN_ReID(nn.Module):
         x = self.layer3(x)
         features = self.layer4(x) 
         
-        # 全局平均池化并展平
+        # Global Average Pooling and Flattening
         vbase = self.gap(features).view(features.size(0), -1)
         
-        # 通过 BNNeck
+        # Pass through BNNeck
         feat_bn = self.bottleneck(vbase)
         
-        # 🚨 核心修改：评测/推理时，必须返回 feat_bn 而不是 vbase！
+        #  Core Change: Evaluation/Inference must return feat_bn, not vbase!
         return (self.classifier(feat_bn), vbase) if self.training else feat_bn
 
 # ==========================================
-# 5. 评测函数 (提取特征 & CMC/mAP)
+# 5. Evaluation Functions (Feature Extraction & CMC/mAP)
 # ==========================================
 def extract_features(model, dataloader, device):
     model.eval()
@@ -274,7 +280,7 @@ def extract_features(model, dataloader, device):
         for imgs, vids, cams, _ in dataloader:
             imgs = imgs.to(device)
             feats = model(imgs)
-            feats = F.normalize(feats, p=2, dim=1) # 必须做 L2 归一化
+            feats = F.normalize(feats, p=2, dim=1) # L2 Normalization is mandatory
             feats_list.append(feats.cpu())
             vids_list.extend(vids)
             cams_list.extend(cams)
@@ -291,7 +297,7 @@ def evaluate_reid(q_feats, q_vids, q_cams, g_feats, g_vids, g_cams):
     for q_idx in range(num_q):
         q_vid, q_cam = q_vids[q_idx], q_cams[q_idx]
         order = indices[q_idx]
-        # 排除同 ID 且同摄像头的 junk 数据
+        # Remove junk data (same ID and same Camera)
         remove = (g_vids[order] == q_vid) & (g_cams[order] == q_cam)
         keep = np.invert(remove)
         raw_match = matches[q_idx][keep]
@@ -312,11 +318,11 @@ def evaluate_reid(q_feats, q_vids, q_cams, g_feats, g_vids, g_cams):
     return mAP, CMC
 
 # ==========================================
-# 6. 主流程：真实 Query 评测与微调
+# 6. Main Process: Real Query Evaluation & Fine-tuning
 # ==========================================
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--root', type=str, required=True, help="数据集根目录")
+    parser.add_argument('--root', type=str, required=True, help="Dataset root directory")
     parser.add_argument('--epochs', type=int, default=30) 
     parser.add_argument('--batch_size', type=int, default=64)
     parser.add_argument('--save_dir', type=str, default='./IBNmodel_output')
@@ -327,8 +333,8 @@ def main():
     os.makedirs(args.save_dir, exist_ok=True)
     best_ckpt_path = os.path.join(args.save_dir, 'best_resnet50_ibn.pth')
     
-    # ---------------- 核心修改点：构建真实评测名单 ----------------
-    print("\n=> 正在解析真实 Train, Query, Test 数据字典...")
+    # ---------------- Core Modification: Build real evaluation manifest ----------------
+    print("\n=> Parsing real Train, Query, and Test data dictionaries...")
     train_xml = os.path.join(args.root, 'train_label.xml')
     test_xml = os.path.join(args.root, 'test_label.xml')
     query_txt = os.path.join(args.root, 'name_query.txt')
@@ -336,21 +342,21 @@ def main():
 
     train_list, num_classes = get_train_data(train_xml)
     
-    # 解析出底层映射关系
+    # Parse underlying mapping relationships
     test_img_to_vid, test_img_to_cam = get_test_meta_map(test_xml)
     query_names = read_txt_lines(query_txt)
     test_names = read_txt_lines(test_txt)
     
-    # 生成真实的 List：(图片名, 车辆ID, 摄像头ID)
+    # Generate real lists: (imageName, vehicleID, cameraID)
     real_q_list = [(name, parse_query_meta(name)[0], parse_query_meta(name)[1]) for name in query_names] 
     real_test_list = [(name, test_img_to_vid.get(name, "-1"), test_img_to_cam.get(name, "-1")) for name in test_names]
     
-    print(f"   [Train] 训练样本数: {len(train_list)} (ID分类数: {num_classes})")
-    print(f"   [Query] 真实查询数: {len(real_q_list)}")
-    print(f"   [Test]  底库样本数: {len(real_test_list)}\n")
+    print(f"   [Train] Sample count: {len(train_list)} (Class count: {num_classes})")
+    print(f"   [Query] Query count: {len(real_q_list)}")
+    print(f"   [Test]  Gallery count: {len(real_test_list)}\n")
     # --------------------------------------------------------------
 
-    # 图像预处理
+    # Image Preprocessing
     transform_train = transforms.Compose([
         transforms.Resize((256, 256)), transforms.RandomHorizontalFlip(),
         transforms.ToTensor(), transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
@@ -360,25 +366,25 @@ def main():
         transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
     ])
 
-    # 🚨 Dataloader 彻底指向真实的文件夹
-    # --- 核心修改：使用 PK 采样器替换原本的随机打乱 ---
-    # 注意：使用了 sampler 之后，DataLoader 里面决不能再写 shuffle=True
+    # Dataloader points to real directories
+    # --- Core Change: Use PK Sampler instead of standard random shuffle ---
+    # Note: When using a sampler, shuffle=True must be avoided in DataLoader.
     train_sampler = RandomIdentitySampler(train_list, args.batch_size, num_instances=4)
     train_loader = DataLoader(
         ReIDDataset(os.path.join(args.root, 'image_train'), train_list, transform_train), 
         batch_size=args.batch_size, 
-        sampler=train_sampler,  # 👈 挂载刚刚写的采样器
+        sampler=train_sampler,  # Load the custom sampler
         num_workers=4,
-        drop_last=True          # 👈 保证每个 batch 严格等于 64，防止最后一个 batch 尺寸不对导致 Triplet 计算报错
+        drop_last=True          # Ensures batch size is strictly 64 to prevent Triplet calculation errors
     )
     val_q_loader = DataLoader(ReIDDataset(os.path.join(args.root, 'image_query'), real_q_list, transform_test), batch_size=args.batch_size, shuffle=False, num_workers=4)
     val_g_loader = DataLoader(ReIDDataset(os.path.join(args.root, 'image_test'), real_test_list, transform_test), batch_size=args.batch_size, shuffle=False, num_workers=4)
 
     model = ResNet50IBN_ReID(num_classes=num_classes).to(device)
-# --- 1. 定义双重损失函数 ---
+# --- 1. Define Dual Loss Functions ---
     criterion_id = nn.CrossEntropyLoss()
     criterion_triplet = TripletLoss(margin=0.3)
-# 设定两个 Loss 的权重比例（通常 1:1 即可）
+# Set loss weights (usually 1:1)
     weight_id = 1.0
     weight_triplet = 1.0
 # -------------------------
@@ -390,10 +396,10 @@ def main():
     best_mAP = 0.0
     epoch_losses = [] 
 
-    print("=> 🚀 开始训练 ResNet50-IBN，并将在真实 Query 集上评测...")
+    print("=> 🚀 Starting training for ResNet50-IBN with real Query set evaluation...")
     from tqdm import tqdm
     for epoch in range(args.epochs):
-        # --- 学习率 Warmup 逻辑 ---
+        # --- Learning Rate Warmup Logic ---
         if epoch < 10:
             lr = 0.00035 * (epoch + 1) / 10
             for param_group in optimizer.param_groups:
@@ -408,11 +414,11 @@ def main():
             imgs, labels = imgs.to(device), labels.to(device)
             optimizer.zero_grad()
             with autocast('cuda' if device.type == 'cuda' else 'cpu'):
-                # --- 2. 获取双输出 ---
-                # logits 用于 ID Loss 分类；features (即 vbase) 用于 Triplet Loss 计算距离
+                # --- 2. Get Dual Outputs ---
+                # Logits used for ID Loss classification; features (vbase) used for Triplet distance calculation
                 logits, features = model(imgs) 
                 
-                # --- 3. 计算组合 Loss ---
+                # --- 3. Compute Composite Loss ---
                 loss_id = criterion_id(logits, labels)
                 loss_triplet = criterion_triplet(features, labels)
                 
@@ -424,7 +430,7 @@ def main():
             scaler.update()
             
             running_loss += loss.item()
-    # 顺便在进度条里分开显示两个 loss，方便观察收敛情况
+            # Display individual losses in the progress bar
             pbar.set_postfix({
                 'L_id': f"{loss_id.item():.3f}", 
                 'L_tri': f"{loss_triplet.item():.3f}"
@@ -433,20 +439,19 @@ def main():
         avg_loss = running_loss / len(train_loader)
         epoch_losses.append(avg_loss) 
         
-        # 使用真实 Query vs Test 进行评测
+        # Evaluate using real Query vs Test set
         q_feats, q_vids, q_cams = extract_features(model, val_q_loader, device)
         g_feats, g_vids, g_cams = extract_features(model, val_g_loader, device)
         mAP, CMC = evaluate_reid(q_feats, q_vids, q_cams, g_feats, g_vids, g_cams)
 
-        # 先获取本轮实际使用的学习率
+        # Get current effective learning rate
         current_lr = optimizer.param_groups[0]['lr']
         
-        # 将所有重要指标整合到一行打印，保持终端极其清爽
+        # Consolidated log for each epoch
         print(f"Epoch [{epoch+1}/{args.epochs}] | LR: {current_lr:.6f} | Loss: {avg_loss:.4f} | "
               f"Real_mAP: {mAP:.4f} | Rank-1: {CMC[0]:.4f} | Rank-5: {CMC[4]:.4f} | Rank-10: {CMC[9]:.4f}")
 
-# 🚨 核心修复：无条件步进 Scheduler，保持 PyTorch 内部计数器对齐！
-        # (因为我们在下一轮开头还会重新计算 Warmup LR，所以它不会干扰预热逻辑)
+        #  Step the scheduler unconditionally to keep PyTorch counters aligned
         base_scheduler.step()
         
         if mAP > best_mAP:
@@ -457,9 +462,9 @@ def main():
                 'num_classes': num_classes,
                 'best_mAP': best_mAP
             }, best_ckpt_path)
-            print("   [✔] 最优 IBN 模型已更新并保存！")
+            print("   [✔] Optimized IBN model updated and saved!")
 
-    # 绘制并保存 Loss 曲线
+    # Plot and save Loss curve
     plt.figure(figsize=(10, 5))
     plt.plot(range(1, args.epochs + 1), epoch_losses, marker='o', linestyle='-', color='b')
     plt.title('Training Loss Curve (ResNet50-IBN)')
@@ -468,7 +473,7 @@ def main():
     plt.grid(True)
     plot_path = os.path.join(args.save_dir, 'loss_curve.png')
     plt.savefig(plot_path)
-    print(f"\n=> 🎉 训练全流程结束！最优模型和 Loss 曲线已保存至：{args.save_dir}")
+    print(f"\n=>  Training complete! Optimized model and loss curve saved to: {args.save_dir}")
 
 if __name__ == '__main__':
     main()
