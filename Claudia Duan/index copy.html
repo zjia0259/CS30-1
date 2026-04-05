@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>智能时空车辆重识别系统 (Capstone)</title>
+    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
+    <style>
+        body { background-color: #0f172a; color: #e2e8f0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+        .glass-panel { background: rgba(30, 41, 59, 0.7); backdrop-filter: blur(10px); border: 1px solid #334155; border-radius: 12px; }
+        .card-img { width: 100%; height: 120px; object-fit: cover; border-radius: 6px; }
+
+        /* 自定义滑块样式 */
+        input[type=range] { accent-color: #0ea5e9; }
+    </style>
+</head>
+<body>
+<div id="app" class="p-6 max-w-screen-2xl mx-auto flex flex-col gap-6 h-screen">
+
+    <div class="glass-panel p-6 flex justify-between items-center shadow-lg">
+        <div>
+            <h1 class="text-3xl font-bold text-cyan-400">智能时空车辆重识别 (Spatio-Temporal Re-ID)</h1>
+        </div>
+        <div class="flex gap-4">
+            <input type="file" @change="onFileChange" class="hidden" id="fileInput">
+            <button @click="triggerUpload" class="bg-indigo-600 hover:bg-indigo-500 px-5 py-2 rounded-lg font-semibold">1. 上传 Query</button>
+            <button @click="runInference('baseline')" :disabled="!file" class="bg-slate-700 hover:bg-slate-600 disabled:opacity-50 px-5 py-2 rounded-lg">2. Baseline</button>
+            <button @click="runInference('gnn')" :disabled="!file" class="bg-slate-700 hover:bg-slate-600 disabled:opacity-50 px-5 py-2 rounded-lg">3. GNN</button>
+            <button @click="runInference('st')" :disabled="!file" class="bg-rose-600 hover:bg-rose-500 disabled:opacity-50 px-5 py-2 rounded-lg shadow-[0_0_15px_rgba(225,29,72,0.5)] font-bold text-white">4. 开启天网溯源</button>
+        </div>
+    </div>
+
+    <div class="flex gap-6 flex-1 overflow-hidden">
+
+        <div class="w-1/3 flex flex-col gap-6">
+            <div class="glass-panel p-4 flex flex-col items-center">
+                <img v-if="previewUrl" :src="previewUrl" class="w-40 h-40 object-cover rounded-xl border-2 border-slate-700 shadow-xl">
+                <div v-else class="w-40 h-40 border-2 border-dashed border-slate-600 rounded-xl flex items-center justify-center text-slate-500">Query图</div>
+            </div>
+
+            <div v-show="currentMode === 'st'" class="glass-panel p-4 flex-1 flex flex-col">
+                <div class="flex justify-between items-end border-b border-slate-600 pb-2 mb-4">
+                    <h2 class="text-xl font-bold text-rose-400">轨迹溯源与深度分析</h2>
+                    <span class="text-xs text-slate-400">UID: {{ targetUid }}</span>
+                </div>
+
+                <div class="relative w-full flex-1 bg-black rounded-lg border border-slate-700 overflow-hidden flex items-center justify-center">
+                    <img v-if="trajectoryList.length > 0"
+                         :src="'http://localhost:8080/image_test/' + trajectoryList[currentFrameIdx].filename"
+                         class="w-full h-full object-contain" alt="纯净监控画面">
+                    <div v-else class="text-slate-500 animate-pulse">正在提取跨区序列...</div>
+                </div>
+
+                <div class="mt-4 flex items-center gap-4 bg-slate-800 p-3 rounded-lg">
+                    <button @click="togglePlay" class="bg-cyan-600 hover:bg-cyan-500 text-white w-12 h-10 rounded-lg font-bold flex items-center justify-center shadow-lg transition">
+                        {{ isPlaying ? '⏸' : '▶' }}
+                    </button>
+
+                    <div class="flex-1 flex flex-col">
+                        <div class="flex justify-between text-xs text-slate-400 mb-1">
+                            <span>播放速度: {{ playbackSpeed.toFixed(1) }}x</span>
+                            <span>进度: {{ currentFrameIdx + 1 }} / {{ trajectoryList.length }}</span>
+                        </div>
+                        <input type="range" min="0.5" max="5.0" step="0.5" v-model.number="playbackSpeed" class="w-full">
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="w-2/3 flex flex-col gap-6">
+
+            <div v-show="currentMode === 'st'" class="glass-panel p-4 h-64 flex flex-col">
+                <h2 class="text-sm font-bold text-cyan-300 mb-2">天网摄像机拓扑跟踪 (动态生成)</h2>
+                <div id="trajectory-chart" class="w-full flex-1 bg-slate-900 rounded-lg border border-slate-700"></div>
+            </div>
+
+            <div class="glass-panel p-4 flex-1 flex flex-col overflow-hidden">
+                <div class="flex justify-between items-center border-b border-slate-600 pb-2 mb-4">
+                    <h2 class="text-lg font-bold">匹配结果画廊 <span class="text-sm text-cyan-400 ml-2">Top-{{ results.length }}</span></h2>
+                    <div v-if="isLoading" class="text-amber-400 animate-pulse">正在计算中...</div>
+                </div>
+                <div class="overflow-y-auto flex-1 pr-2">
+                    <div class="grid grid-cols-6 gap-3">
+                        <div v-for="res in results" :key="res.rank" class="bg-slate-800 rounded-lg p-2 border border-slate-700">
+                            <img :src="'http://localhost:8080/image_test/' + res.name" @error="handleImgErr" class="card-img" alt="车">
+                            <div class="mt-1 flex justify-between text-xs">
+                                <span class="font-bold text-slate-300">R-{{ res.rank }}</span>
+                                <span class="text-amber-400">{{ (res.score * 100).toFixed(0) }}%</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+        </div>
+    </div>
+</div>
+
+<script>
+const { createApp, ref, watch, nextTick } = Vue;
+
+createApp({
+    setup() {
+        const file = ref(null);
+        const previewUrl = ref('');
+        const currentMode = ref('');
+        const isLoading = ref(false);
+        const results = ref([]);
+
+        // 视频流与轨迹状态
+        const targetUid = ref('');
+        const trajectoryList = ref([]);
+        const currentFrameIdx = ref(0);
+        const isPlaying = ref(false);
+        const playbackSpeed = ref(1.0);
+
+        // 图表状态
+        let myChart = null;
+        const discoveredNodes = ref([]);
+        const graphLinks = ref([]);
+        let lastCam = null;
+        let playTimer = null;
+
+        const triggerUpload = () => document.getElementById('fileInput').click();
+
+        const onFileChange = (e) => {
+            const f = e.target.files[0];
+            if (f) {
+                file.value = f;
+                previewUrl.value = URL.createObjectURL(f);
+                resetPlayer();
+            }
+        };
+
+        const handleImgErr = (e) => { e.target.src = 'https://via.placeholder.com/150/1e293b/e2e8f0?text=No+Img'; };
+
+        const resetPlayer = () => {
+            clearInterval(playTimer);
+            isPlaying.value = false;
+            currentFrameIdx.value = 0;
+            trajectoryList.value = [];
+            discoveredNodes.value = [];
+            graphLinks.value = [];
+            lastCam = null;
+            if(myChart) myChart.clear();
+        };
+
+        const runInference = async (mode) => {
+            if (!file.value) return;
+            isLoading.value = true;
+            currentMode.value = mode;
+            resetPlayer();
+
+            const formData = new FormData();
+            formData.append('file', file.value);
+            formData.append('mode', mode);
+
+            try {
+                const response = await fetch('http://localhost:8000/search', { method: 'POST', body: formData });
+                const data = await response.json();
+                results.value = data.results;
+
+                if (mode === 'st' && data.voted_uid) {
+                    targetUid.value = data.voted_uid;
+                    await fetchTrajectory(data.voted_uid);
+                }
+            } catch (err) {
+                alert('后端连接失败！');
+            } finally {
+                isLoading.value = false;
+            }
+        };
+
+        // 🚨 核心步骤 1：获取纯净照片序列
+        const fetchTrajectory = async (uid) => {
+            const res = await fetch(`http://localhost:8000/trajectory_data/${uid}`);
+            const data = await res.json();
+            trajectoryList.value = data.data;
+
+            await nextTick();
+            initChart();
+            // 获取数据后自动开始播放
+            togglePlay();
+        };
+
+        // 🚨 核心步骤 2：初始化空白图表
+        const initChart = () => {
+            const dom = document.getElementById('trajectory-chart');
+            if(!dom) return;
+            if (myChart) myChart.dispose();
+            myChart = echarts.init(dom);
+            updateChartOption();
+        };
+
+        const updateChartOption = () => {
+            myChart.setOption({
+                animationDurationUpdate: 300,
+                series: [{
+                    type: 'graph',
+                    layout: 'force',
+                    force: { repulsion: 300, edgeLength: 100 },
+                    roam: true,
+                    label: { show: true, fontSize: 14, color: '#fff', fontWeight: 'bold' },
+                    edgeSymbol: ['none', 'arrow'],
+                    edgeSymbolSize: 10,
+                    data: discoveredNodes.value,
+                    links: graphLinks.value,
+                    lineStyle: { color: '#475569', width: 3, curveness: 0.2 },
+                    // 节点高亮时的特效配置
+                    emphasis: {
+                        focus: 'adjacency',
+                        itemStyle: { color: '#0ea5e9', shadowBlur: 20, shadowColor: '#0ea5e9' },
+                        label: { color: '#0ea5e9', fontSize: 16 },
+                        lineStyle: { width: 5, color: '#0ea5e9' }
+                    }
+                }]
+            });
+        };
+
+        // 🚨 核心步骤 3：播放控制器
+        const togglePlay = () => {
+            if (trajectoryList.value.length === 0) return;
+            isPlaying.value = !isPlaying.value;
+            if (isPlaying.value) runLoop();
+            else clearTimeout(playTimer);
+        };
+
+        const runLoop = () => {
+            if (!isPlaying.value) return;
+
+            processCurrentFrame();
+
+            // 下一帧的索引 (循环)
+            currentFrameIdx.value = (currentFrameIdx.value + 1) % trajectoryList.value.length;
+
+            // 基础帧率 800ms，除以倍速
+            const delay = 800 / playbackSpeed.value;
+            playTimer = setTimeout(runLoop, delay);
+        };
+
+        // 🚨 核心步骤 4：处理图表节点与高亮逻辑
+        const processCurrentFrame = () => {
+            if(!myChart) return;
+            const currentCam = trajectoryList.value[currentFrameIdx.value].cam;
+            let needChartUpdate = false;
+
+            // 1. 如果是第一次遇到这个摄像头，生成节点
+            const existNode = discoveredNodes.value.find(n => n.name === currentCam);
+            if (!existNode) {
+                discoveredNodes.value.push({
+                    name: currentCam,
+                    symbolSize: 50,
+                    itemStyle: { color: '#334155', borderColor: '#94a3b8', borderWidth: 2 }
+                });
+                needChartUpdate = true;
+            }
+
+            // 2. 如果和上一帧不在同一个摄像头，生成连线
+            if (lastCam && lastCam !== currentCam) {
+                const existLink = graphLinks.value.find(l => l.source === lastCam && l.target === currentCam);
+                if (!existLink) {
+                    graphLinks.value.push({ source: lastCam, target: currentCam });
+                    needChartUpdate = true;
+                }
+            }
+            lastCam = currentCam;
+
+            // 3. 将新结构同步给 ECharts
+            if (needChartUpdate) updateChartOption();
+
+            // 4. 让当前摄像头节点“变亮” (高亮)
+            const nodeIndex = discoveredNodes.value.findIndex(n => n.name === currentCam);
+
+            // 取消之前的高亮
+            myChart.dispatchAction({ type: 'downplay' });
+            // 点亮当前节点
+            myChart.dispatchAction({
+                type: 'highlight',
+                seriesIndex: 0,
+                dataIndex: nodeIndex
+            });
+        };
+
+        // 监听速度变化，不影响当前 setTimeout 但会在下一次执行时生效
+        watch(playbackSpeed, () => {
+            if(isPlaying.value) {
+                clearTimeout(playTimer);
+                runLoop();
+            }
+        });
+
+        return {
+            file, previewUrl, currentMode, isLoading, results,
+            targetUid, trajectoryList, currentFrameIdx, isPlaying, playbackSpeed,
+            triggerUpload, onFileChange, runInference, handleImgErr, togglePlay
+        };
+    }
+}).mount('#app');
+</script>
+</body>
+</html>
