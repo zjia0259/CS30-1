@@ -1,4 +1,4 @@
-# 文件名: train_kg_gnn.py
+# train_kg_gnn.py
 import os
 import random
 import argparse
