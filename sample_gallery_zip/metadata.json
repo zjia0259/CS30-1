@@ -1,0 +1,23 @@
+﻿[
+    {
+        "timestamp":  1001,
+        "camera_id":  3,
+        "filename":  "cam3_carA_001.jpg",
+        "vehicle_id":  "carA",
+        "location":  "South Gate"
+    },
+    {
+        "timestamp":  1088,
+        "camera_id":  5,
+        "filename":  "cam5_carA_002.jpg",
+        "vehicle_id":  "carA",
+        "location":  "East Crossroad"
+    },
+    {
+        "timestamp":  2050,
+        "camera_id":  8,
+        "filename":  "cam8_carB_001.jpg",
+        "vehicle_id":  "carB",
+        "location":  "North Exit"
+    }
+]

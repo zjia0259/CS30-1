@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Vehicle ReID Mobile</title>
+  <style>
+    :root {
+      --bg: #07111f;
+      --panel: rgba(12, 26, 45, 0.88);
+      --line: rgba(103, 189, 255, 0.16);
+      --text: #e7f1ff;
+      --muted: #8da4c2;
+      --accent: #56c7ff;
+      --danger: #ff6d6d;
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", "PingFang SC", sans-serif;
+      background:
+        radial-gradient(circle at top, rgba(86, 199, 255, 0.14), transparent 28%),
+        linear-gradient(180deg, #08111c 0%, #030712 100%);
+      color: var(--text);
+    }
+
+    .page {
+      max-width: 720px;
+      margin: 0 auto;
+      padding: 20px 14px 32px;
+    }
+
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      padding: 16px;
+      backdrop-filter: blur(10px);
+      box-shadow: 0 16px 36px rgba(0, 0, 0, 0.32);
+      margin-bottom: 14px;
+    }
+
+    h1 {
+      margin: 0 0 8px;
+      font-size: 24px;
+    }
+
+    p { color: var(--muted); }
+
+    label {
+      display: block;
+      margin: 12px 0 6px;
+      font-size: 13px;
+      color: var(--muted);
+    }
+
+    input, select, button {
+      width: 100%;
+      border-radius: 12px;
+      border: 1px solid rgba(141, 164, 194, 0.2);
+      background: rgba(4, 14, 28, 0.86);
+      color: var(--text);
+      padding: 12px 14px;
+      font-size: 14px;
+    }
+
+    button {
+      margin-top: 14px;
+      border: none;
+      background: linear-gradient(135deg, #1aa9ff, #0f6ce9);
+      font-weight: 600;
+    }
+
+    .muted { color: var(--muted); font-size: 13px; }
+    .danger { color: var(--danger); }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .card {
+      background: rgba(7, 16, 30, 0.95);
+      border: 1px solid rgba(141, 164, 194, 0.12);
+      border-radius: 14px;
+      overflow: hidden;
+    }
+
+    .card img {
+      display: block;
+      width: 100%;
+      aspect-ratio: 4 / 3;
+      object-fit: cover;
+      background: #0a1422;
+    }
+
+    .card-body {
+      padding: 10px;
+      font-size: 12px;
+      line-height: 1.6;
+    }
+
+    .badge {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 999px;
+      background: rgba(86, 199, 255, 0.12);
+      color: var(--accent);
+      font-size: 12px;
+      margin-bottom: 8px;
+    }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <div class="panel">
+      <h1>移动端查车页</h1>
+      <p>调用 FastAPI 的 `/search` 与 `/upload_gallery`，用于手机侧快速演示。</p>
+    </div>
+
+    <div class="panel">
+      <label for="galleryZip">更新动态图库 ZIP</label>
+      <input id="galleryZip" type="file" accept=".zip" />
+      <button id="uploadGalleryBtn" type="button">上传并重建图库</button>
+      <div id="uploadGalleryMsg" class="muted"></div>
+    </div>
+
+    <div class="panel">
+      <label for="queryImage">查询图片</label>
+      <input id="queryImage" type="file" accept="image/*" />
+
+      <label for="searchMode">查询模式</label>
+      <select id="searchMode">
+        <option value="auto">auto</option>
+        <option value="baseline">baseline</option>
+        <option value="gnn">gnn</option>
+        <option value="st">st</option>
+      </select>
+
+      <label for="cameraId">摄像头 ID</label>
+      <input id="cameraId" type="text" placeholder="例如 3 或 c003" />
+
+      <label for="frameId">时间戳 / 帧号</label>
+      <input id="frameId" type="text" placeholder="例如 123456" />
+
+      <button id="searchBtn" type="button">查询 Top 10</button>
+      <div id="searchMsg" class="muted"></div>
+    </div>
+
+    <div id="results" class="grid"></div>
+  </div>
+
+  <script>
+    const uploadGalleryBtn = document.getElementById("uploadGalleryBtn");
+    const uploadGalleryMsg = document.getElementById("uploadGalleryMsg");
+    const searchBtn = document.getElementById("searchBtn");
+    const searchMsg = document.getElementById("searchMsg");
+    const resultsEl = document.getElementById("results");
+
+    uploadGalleryBtn.addEventListener("click", async () => {
+      const fileInput = document.getElementById("galleryZip");
+      const file = fileInput.files[0];
+      if (!file) {
+        uploadGalleryMsg.textContent = "请先选择 ZIP。";
+        uploadGalleryMsg.className = "muted danger";
+        return;
+      }
+
+      uploadGalleryMsg.textContent = "图库上传中...";
+      uploadGalleryMsg.className = "muted";
+
+      const formData = new FormData();
+      formData.append("file", file);
+
+      try {
+        const response = await fetch("/upload_gallery", { method: "POST", body: formData });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.detail || "上传失败");
+        uploadGalleryMsg.textContent = `完成：${data.images} 张，graph=${data.supports_graph}，st=${data.supports_st}`;
+      } catch (error) {
+        uploadGalleryMsg.textContent = error.message;
+        uploadGalleryMsg.className = "muted danger";
+      }
+    });
+
+    searchBtn.addEventListener("click", async () => {
+      const queryFile = document.getElementById("queryImage").files[0];
+      if (!queryFile) {
+        searchMsg.textContent = "请先选择查询图片。";
+        searchMsg.className = "muted danger";
+        return;
+      }
+
+      searchMsg.textContent = "检索中...";
+      searchMsg.className = "muted";
+      resultsEl.innerHTML = "";
+
+      const formData = new FormData();
+      formData.append("file", queryFile);
+      formData.append("mode", document.getElementById("searchMode").value);
+
+      const cameraId = document.getElementById("cameraId").value.trim();
+      const frameId = document.getElementById("frameId").value.trim();
+      if (cameraId) formData.append("camera_id", cameraId);
+      if (frameId) formData.append("frame_id", frameId);
+
+      try {
+        const response = await fetch("/search", { method: "POST", body: formData });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.detail || "查询失败");
+
+        searchMsg.textContent = `模式: ${data.resolved_mode}` +
+          (data.degraded_reason ? `，降级原因: ${data.degraded_reason}` : "");
+
+        const top10 = data.results.slice(0, 10);
+        resultsEl.innerHTML = top10.map((item) => `
+          <div class="card">
+            <img src="${item.image_url}" alt="${item.name}" />
+            <div class="card-body">
+              <div class="badge">#${item.rank}</div>
+              <div>${item.name}</div>
+              <div>score: ${item.score.toFixed(4)}</div>
+              <div>vehicle: ${item.vehicle_id || "-"}</div>
+              <div>camera: ${item.camera_id ?? "-"}</div>
+              <div>frame: ${item.frame_id ?? "-"}</div>
+              <div class="${item.penalized_by_st ? "danger" : "muted"}">
+                ${item.penalized_by_st ? "被时空规则惩罚" : "正常候选"}
+              </div>
+            </div>
+          </div>
+        `).join("");
+      } catch (error) {
+        searchMsg.textContent = error.message;
+        searchMsg.className = "muted danger";
+      }
+    });
+  </script>
+</body>
+</html>
