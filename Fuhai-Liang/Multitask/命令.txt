@@ -1,0 +1,8 @@
+python train_resnet_ibn.py --root ./data/VeRi --save_dir ./ResNet_IBN_output --epochs 100 --batch_size 128 
+
+
+python build_gallery.py
+
+
+# 启动FastAPI
+uvicorn app:app --host 0.0.0.0 --port 8000 --reload

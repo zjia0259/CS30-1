@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>车辆多任务识别与检索系统</title>
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f4f7f6; color: #333; margin: 0; padding: 40px; }
+        .container { max-width: 900px; margin: auto; background: white; padding: 30px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.1); text-align: center; }
+        h1 { color: #2c3e50; }
+        .upload-section { margin: 20px 0; padding: 30px; border: 2px dashed #3498db; border-radius: 8px; background: #eaf2f8; }
+        #imagePreview { max-width: 300px; border-radius: 8px; margin-top: 15px; display: none; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+        .result-sentence { font-size: 20px; font-weight: bold; color: #e74c3c; margin: 25px 0; background: #fdf2e9; padding: 15px; border-radius: 8px; display: none;}
+        .gallery { display: flex; justify-content: space-between; margin-top: 20px; flex-wrap: wrap; }
+        .gallery-item { width: 18%; text-align: center; }
+        .gallery-item img { width: 100%; border-radius: 6px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); border: 3px solid transparent; transition: 0.3s; }
+        .gallery-item img:hover { border-color: #3498db; transform: scale(1.05); }
+        .rank-label { margin-top: 8px; font-weight: bold; color: #7f8c8d; font-size: 14px; }
+        button { background-color: #3498db; color: white; border: none; padding: 10px 20px; font-size: 16px; border-radius: 6px; cursor: pointer; transition: 0.3s; }
+        button:hover { background-color: #2980b9; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h1>🚔 车辆多任务特征检索系统</h1>
+    
+    <div class="upload-section">
+        <input type="file" id="fileInput" accept="image/*" style="display: none;" onchange="previewAndUpload()">
+        <button onclick="document.getElementById('fileInput').click()">选择待查询车辆图片</button>
+        <br>
+        <img id="imagePreview" alt="上传预览">
+    </div>
+
+    <div id="resultText" class="result-sentence"></div>
+
+    <h3 id="galleryTitle" style="display:none; text-align: left; color: #2c3e50; border-bottom: 2px solid #ecf0f1; padding-bottom: 10px;">🔍 图库匹配 Top-10 相似车辆</h3>
+    <div class="gallery" id="resultsGallery"></div>
+</div>
+
+<script>
+    async function previewAndUpload() {
+        const fileInput = document.getElementById('fileInput');
+        const file = fileInput.files[0];
+        if (!file) return;
+
+        // 1. 显示预览图
+        const reader = new FileReader();
+        reader.onload = function(e) {
+            document.getElementById('imagePreview').src = e.target.result;
+            document.getElementById('imagePreview').style.display = 'inline-block';
+        }
+        reader.readAsDataURL(file);
+
+        // UI 状态更新
+        document.getElementById('resultText').style.display = 'block';
+        document.getElementById('resultText').innerHTML = "⏳ 正在连接 AI 引擎提取特征与多维属性，请稍候...";
+        document.getElementById('galleryTitle').style.display = 'none';
+        document.getElementById('resultsGallery').innerHTML = '';
+
+        // 2. 发送到 FastAPI 后端
+        const formData = new FormData();
+        formData.append("file", file);
+
+        try {
+            // 注意：如果你部署在服务器上，请把 127.0.0.1 换成服务器 IP
+            const response = await fetch("http://127.0.0.1:8000/predict", {
+                method: "POST",
+                body: formData
+            });
+            const data = await response.json();
+
+            // 3. 渲染结果文本
+            document.getElementById('resultText').innerHTML = 
+                `✨ 分析完毕！系统判断这可能是一辆 <span style="color:#2980b9;">【${data.color}】</span> 的 <span style="color:#2980b9;">【${data.type}】</span>。`;
+
+            // 4. 渲染 Top-10 图片
+            document.getElementById('galleryTitle').style.display = 'block';
+            let galleryHTML = '';
+            data.top10.forEach((imgName, index) => {
+                // 指向 FastAPI 的静态文件路由
+                const imgSrc = `http://127.0.0.1:8000/gallery_images/${imgName}`;
+                galleryHTML += `
+                    <div class="gallery-item">
+                        <img src="${imgSrc}" alt="Top ${index+1}">
+                        <div class="rank-label">Rank ${index+1}</div>
+                    </div>
+                `;
+            });
+            document.getElementById('resultsGallery').innerHTML = galleryHTML;
+
+        } catch (error) {
+            console.error("Error:", error);
+            document.getElementById('resultText').innerHTML = "❌ 服务器连接失败，请检查后端是否运行。";
+        }
+    }
+</script>
+
+</body>
+</html>
