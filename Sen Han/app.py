@@ -399,7 +399,10 @@ class RuntimeService:
         with tempfile.TemporaryDirectory(prefix="gallery_upload_", dir=str(UPLOAD_DIR)) as temp_dir:
             temp_root = Path(temp_dir)
             with zipfile.ZipFile(zip_path, "r") as zip_ref:
-                zip_ref.extractall(temp_root)
+                for member in zip_ref.infolist():
+                    # Fix Windows-style backslash paths in ZIP (cross-platform compatibility)
+                    member.filename = member.filename.replace("\\", "/")
+                    zip_ref.extract(member, temp_root)
 
             image_map = collect_image_files(temp_root)
             if not image_map:
@@ -407,7 +410,7 @@ class RuntimeService:
 
             metadata_path = find_metadata_file(temp_root)
             if metadata_path:
-                with open(metadata_path, "r", encoding="utf-8") as file_obj:
+                with open(metadata_path, "r", encoding="utf-8-sig") as file_obj:
                     payload = json.load(file_obj)
                 metadata_items = normalize_metadata_payload(payload)
             else:
