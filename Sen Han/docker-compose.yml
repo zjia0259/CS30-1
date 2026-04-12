@@ -1,0 +1,46 @@
+# ============================================================
+# Vehicle ReID API - Docker Compose
+# Author: Sen Han (Member D - DevOps & Testing)
+#
+# Usage:
+#   docker-compose up -d          # Start (GPU mode)
+#   docker-compose logs -f api    # View logs
+#   docker-compose down           # Stop
+# ============================================================
+
+version: '3.8'
+
+services:
+  api:
+    build: .
+    container_name: vehicle_reid_api
+    ports:
+      - "8000:8000"
+    volumes:
+      # Model weights (read-only) - place best_module/ in the same directory as docker-compose.yml
+      - ./best_module:/app/best_module:ro
+      # VeRi dataset (optional, read-only) - only needed if using the legacy VeRi gallery
+      - ./data:/app/data:ro
+      # Runtime data (uploads, dynamic gallery cache) - persisted across restarts
+      - gallery_runtime:/app/runtime
+    environment:
+      - BASELINE_CKPT=/app/best_module/best_resnet50_ibn.pth
+      - KG_CKPT=/app/best_module/best_kg_module.pth
+      - VERI_DATA_ROOT=/app/data/VeRi
+      - NUM_CLASSES=575
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+volumes:
+  gallery_runtime:

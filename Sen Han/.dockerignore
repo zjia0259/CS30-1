@@ -1,0 +1,10 @@
+.git
+**/__pycache__
+**/*.pyc
+**/*.pyo
+*.pth
+*.pt
+data/
+runtime/
+.DS_Store
+*.zip
